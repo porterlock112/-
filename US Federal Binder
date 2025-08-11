@@ -1,0 +1,19 @@
+📁 TRUTHLOCK_BINDER/
+│
+├── Cover.pdf
+├── Table_of_Contents.pdf
+├── Exhibits/
+│   ├── Exhibit_A_Dismissal_Order.pdf
+│   ├── Exhibit_B_Child_Support_Ledger.pdf
+│   └── ...
+│
+├── Legal_Claims/
+│   ├── Claim_001_Due_Process_Violation.md
+│   ├── Claim_002_Ghost_Custody_Billing.md
+│
+├── Value_Trace/
+│   ├── Ledger_Audit.csv
+│   ├── Billing_Contradictions.pdf
+│
+└── Affidavit/
+    └── UNNAMED_FATHER_SCROLL.pdf

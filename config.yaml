@@ -1,0 +1,6 @@
+vault_root: incoming
+processed_dir: processed
+log_file: Chain_of_Custody_Log.csv
+tesseract_cmd: /usr/bin/tesseract
+poll_interval: 5
+app_log: intake.log

@@ -1,0 +1,81 @@
+<!doctype html><meta charset="utf-8">
+<title>Drive Mode — TruthLock</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<link href="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.css" rel="stylesheet">
+<style>
+  html,body,#map{height:100%;margin:0}
+  .legend{position:absolute;top:10px;left:10px;background:#fff;padding:8px 10px;border-radius:6px;font:13px system-ui}
+  .legend div{margin:4px 0}
+  .legend .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}
+</style>
+<div id="map"></div>
+<div class="legend" id="legend"></div>
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.9.0/mapbox-gl.js"></script>
+<script>
+  mapboxgl.accessToken = (window.MAPBOX_TOKEN || (new URLSearchParams(location.search).get('token'))) || (window.MAPBOX_TOKEN || 'YOUR_MAPBOX_TOKEN');
+  const map = new mapboxgl.Map({
+    container:'map',
+    style:'mapbox://styles/mapbox/streets-v12',
+    center:[-90, 35], zoom:4.3
+  });
+
+  const lanes = ["ESTABLISH","PHRASE","SEAL","SYNC","CONFIRM","SEND","VERIFY"];
+  const laneColor = idx => ['#888','#0aa','#06c','#7a4','#7b1','#1a8','#2a2'][idx] || '#11b4da';
+
+  const cars = { type:'FeatureCollection', features:[] };
+  const idxById = new Map();
+
+  function upsertCar(msg){
+    const f = {
+      type:'Feature',
+      properties: { id: msg.id, stage: msg.stage, scp: msg.scp || "", rekor: !!msg.rekor, cid: !!msg.cid },
+      geometry:{ type:'Point', coordinates:[msg.lon, msg.lat] }
+    };
+    if (idxById.has(msg.id)) cars.features[idxById.get(msg.id)] = f;
+    else { idxById.set(msg.id, cars.features.length); cars.features.push(f); }
+    if (map.getSource('cars')) map.getSource('cars').setData(cars);
+  }
+
+  function paintLegend(){
+    const el = document.getElementById('legend');
+    el.innerHTML = lanes.map((L,i)=> `<div><span class="dot" style="background:${laneColor(i)}"></span>${L}</div>`).join('');
+  }
+
+  map.on('load', () => {
+    map.addSource('cars', { type:'geojson', data: cars });
+    map.addLayer({
+      id:'cars', type:'circle', source:'cars',
+      paint:{
+        'circle-radius': 5,
+        'circle-color': ['match', ['get','stage'],
+          'ESTABLISH', laneColor(0),
+          'PHRASE',    laneColor(1),
+          'SEAL',      laneColor(2),
+          'SYNC',      laneColor(3),
+          'CONFIRM',   laneColor(4),
+          'SEND',      laneColor(5),
+          'VERIFY',    laneColor(6),
+          /* else */   '#11b4da'
+        ],
+        'circle-stroke-color':'white',
+        'circle-stroke-width':1
+      }
+    });
+    map.on('click','cars', (e) => {
+      const p = e.features[0].properties;
+      const json = JSON.stringify(p, null, 2);
+      new mapboxgl.Popup().setLngLat(e.lngLat).setHTML(`<pre style="margin:0">${json}</pre>`).addTo(map);
+    });
+    paintLegend();
+  });
+
+  // Live updates
+  const es = new EventSource('/qph/stream');
+  es.addEventListener('plan', ev => {
+    try {
+      const pkt = JSON.parse(ev.data);
+      const msg = pkt.data || pkt;
+      if (msg.lon != null && msg.lat != null && msg.id) upsertCar(msg);
+    } catch(e){ /* ignore */ }
+  });
+</script>

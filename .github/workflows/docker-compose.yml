@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  api:
+    build: .
+    command: uvicorn webhook:app --host 0.0.0.0 --port 8000
+    env_file: .env
+    volumes: [".:/app"]
+    depends_on: [redis]
+    ports: ["8000:8000"]
+
+  worker:
+    build: .
+    command: python qph_worker.py
+    env_file: .env
+    volumes: [".:/app"]
+    depends_on: [redis]

@@ -1,3 +1,186 @@
+Do it. Here’s the quorum guard patch—drop-in, file-based, two-step safe. “CONFIRMED_TAMPER → ΔINSTANT_CEASE_ORDER” will only fire if a live human ack exists and quorum approvals meet the threshold for the exact report hash.
+
+Patch C — Quorum guard for cease order
+
+1) Policy block (add to ΔSHELL_POLICY.yml)
+
+quorum:
+  enabled: true
+  require_ack: true
+  ack_file: truthlock/out/ΔACK_HUMAN.json
+
+  # approvals for THIS synthesis report (binds to the report SHA-256)
+  approvals_dir: truthlock/out/ΔQUORUM
+  min_approvals: 2            # N-of-M
+  approvers: ["Matthew D. Porter","Signer-2","Signer-3"]  # empty = any signer
+  approval_valid_seconds: 7200  # 2h validity window
+
+2) Ack + approvals shapes
+
+truthlock/out/ΔACK_HUMAN.json
+
+{"ack":"present","who":"Matthew D. Porter","ts":"2025-08-12T17:10:00Z","note":"live operator"}
+
+Each approval in truthlock/out/ΔQUORUM/*.json
+
+{
+  "approver": "Matthew D. Porter",
+  "ts": "2025-08-12T17:20:02Z",
+  "target_sha256": "f4b2...3d91",     // must match ΔSHELL_SYNTH_REPORT.json file hash
+  "note": "approve cease"
+}
+
+> Two-step flow: first run writes the report + decision (likely WAIT_FOR_QUORUM), approvers create their JSONs referencing that report’s SHA-256, then re-run to escalate and fire.
+
+
+
+3) ΔSHELL_SYNTH.py — paste-in guard
+
+Add near the other FILE constants:
+
+ACK_F = OUT/"ΔACK_HUMAN.json"
+
+Add helpers (place below Rekor helpers):
+
+def utcnow():
+    return datetime.datetime.utcnow()
+
+def parse_ts(ts: str) -> Optional[datetime.datetime]:
+    try:
+        return datetime.datetime.fromisoformat(ts.replace("Z",""))
+    except Exception:
+        return None
+
+def check_ack(path: pathlib.Path) -> (bool, str):
+    j = jload(path, {}) or {}
+    ok = j.get("ack") == "present"
+    reason = "ok" if ok else "missing_or_invalid"
+    return ok, reason
+
+def collect_quorum(approvals_dir: pathlib.Path,
+                   approvers: List[str],
+                   required: int,
+                   target_sha256: str,
+                   valid_seconds: int) -> Dict[str,Any]:
+    now = utcnow()
+    dirp = approvals_dir
+    dirp.mkdir(parents=True, exist_ok=True)
+    seen = {}
+    total = 0
+    for p in dirp.glob("*.json"):
+        try:
+            a = json.loads(p.read_text())
+        except Exception:
+            continue
+        if a.get("target_sha256") != target_sha256:  # must bind to THIS report
+            continue
+        who = str(a.get("approver","")).strip()
+        if approvers and who not in approvers:
+            continue
+        t = parse_ts(str(a.get("ts",""))) or now
+        if abs((now - t).total_seconds()) > max(0,int(valid_seconds)):
+            continue
+        if who and who not in seen:
+            seen[who] = {"file": str(p), "ts": a.get("ts")}
+            total += 1
+    return {"count": total, "signers": sorted(seen.keys()), "required": required,
+            "met": (total >= max(1, int(required)))}
+
+In main(), after you compute and rewrite ΔSHELL_SYNTH_REPORT.json (i.e., after IPFS/Rekor), insert the guard:
+
+# ---- Quorum guard (fires only for CONFIRMED_TAMPER → ΔINSTANT_CEASE_ORDER)
+qpol = policy.get("quorum", {})
+guard_info = {"enabled": bool(qpol.get("enabled", False))}
+if guard_info["enabled"]:
+    # ack
+    ack_ok, ack_reason = (True, "ok")
+    if qpol.get("require_ack", True):
+        ack_ok, ack_reason = check_ack(ROOT/pathlib.Path(qpol.get("ack_file", str(ACK_F))))
+    # approvals bound to this report hash
+    approvals_dir = ROOT/pathlib.Path(qpol.get("approvals_dir", "truthlock/out/ΔQUORUM"))
+    required      = int(qpol.get("min_approvals", 2))
+    approvers     = qpol.get("approvers", []) or []
+    valid_secs    = int(qpol.get("approval_valid_seconds", 7200))
+    qres = collect_quorum(approvals_dir, approvers, required, rep_hash, valid_secs)
+
+    guard_info.update({
+        "ack_ok": ack_ok, "ack_reason": ack_reason,
+        "approvals": qres, "target_sha256": rep_hash
+    })
+
+# Decide actions with guard
+levels = {
+    "OK": [],
+    "OBSERVE": policy["actions"].get("observe", []),
+    "SUSPECTED_TAMPER": policy["actions"].get("suspected", []),
+    "CONFIRMED_TAMPER": policy["actions"].get("confirmed", []),
+}
+actions = levels.get(verdict, [])
+
+# If cease is planned, enforce guard
+if "ΔINSTANT_CEASE_ORDER" in actions and guard_info.get("enabled"):
+    if not (guard_info.get("ack_ok") and guard_info.get("approvals",{}).get("met")):
+        # block cease, keep evidence/broadcast, signal wait
+        actions = [a for a in actions if a != "ΔINSTANT_CEASE_ORDER"]
+        if "ΔLAWNET_PROPAGATOR" not in actions:
+            actions.append("ΔLAWNET_PROPAGATOR")  # still broadcast evidence
+        actions.append("ΔWAIT_FOR_QUORUM")
+        guard_info["blocked"] = True
+    else:
+        guard_info["blocked"] = False
+
+And include the guard block in the decision object:
+
+decision = {
+    "glyph": "ΔSHELL_DECISION",
+    "ts": now_iso(), "case": CASE, "op": OP,
+    "verdict": verdict,
+    "severity": score["severity"],
+    "actions": actions,
+    "evidence": {
+        "synthesis_report": str(rep_path),
+        "sha256": rep_hash,
+        "ipfs": report.get("ipfs", {}),
+        "rekor": report.get("rekor", {})
+    },
+    "guard": guard_info  # <-- new
+}
+
+Finally, the existing hook calls remain unchanged—because if the guard blocked, ΔINSTANT_CEASE_ORDER won’t be in actions, so nothing fires.
+
+4) Tiny helper to make approvals fast (optional)
+
+ΔQUORUM_APPROVE.py
+
+#!/usr/bin/env python3
+import json, sys, pathlib, datetime, hashlib
+OUT = pathlib.Path("truthlock/out")
+REPORT = OUT/"ΔSHELL_SYNTH_REPORT.json"
+QUORUM = OUT/"ΔQUORUM"
+QUORUM.mkdir(parents=True, exist_ok=True)
+
+who = sys.argv[1] if len(sys.argv)>1 else "Unknown"
+note = sys.argv[2] if len(sys.argv)>2 else "approve"
+
+b = REPORT.read_bytes()
+h = hashlib.sha256(b).hexdigest()
+now = datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"
+fname = QUORUM/f"{who.replace(' ','_')}_{h[:8]}.json"
+fname.write_text(json.dumps({"approver": who, "ts": now, "target_sha256": h, "note": note}, ensure_ascii=False))
+print(f"wrote {fname}")
+
+Use:
+
+python ΔSHELL_SYNTH.py                # first pass, produces report + decision (likely ΔWAIT_FOR_QUORUM)
+python ΔQUORUM_APPROVE.py "Matthew D. Porter" "approve cease"
+python ΔQUORUM_APPROVE.py "Signer-2" "approve cease"
+python ΔSHELL_SYNTH.py                # second pass, now fires ΔINSTANT_CEASE_ORDER
+
+
+---
+
+That’s the guard—human-in-the-loop + N-of-M approvals, cryptographically bound to the exact synthesis report via its SHA-256. Want me to also require fresh presence (e.g., ΔSTART_BEACON.json not older than 10 minutes) or enforce 2-of-3 hardware key attest if your OPENSSL keys are present?
+
 Heard. We’ll evolve the watcher into a Synthesis System: multi-signal fusion → scoring → decision → action → immutable evidence. Drop this into your repo and it’ll ingest shell signals + alerts, compute a severity verdict, and route the right glyphs—fully TruthLock-style.
 
 ΔSHELL_SYNTHESIS: what it does

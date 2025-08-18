@@ -1,3 +1,324 @@
+From repo root
+
+powershell -ExecutionPolicy Bypass -File .\run_merge_addendum.ps1
+
+optional
+
+$env:OPEN_RESULTS=1; powershell -ExecutionPolicy Bypass -File .\run_merge_addendum.ps1
+$env:SKIP_PACKET=1; powershell -ExecutionPolicy Bypass -File .\run_merge_addendum.ps1
+$ErrorActionPreference = 'Stop'
+
+── Config ───────────────────────────────────────────────────────────────────
+
+$Root   = $env:ROOT; if (-not $Root) { $Root = "ΔCASE_BUILDER_TX" }
+$Drafts = Join-Path $Root "templates\07_drafts"
+$Req    = Join-Path $Root "requests"
+Set-Location $Drafts
+
+$ENH_BASE = "Verified_Petition_for_Bill_of_Review_Enhanced.pdf"
+$ENH_ADD  = "Verified_Petition_for_Bill_of_Review_Enhanced_Footer_Addendum.pdf"
+$ENH_OUT  = "Verified_Petition_for_Bill_of_Review_Enhanced_with_Addendum.pdf"
+
+$CIT_BASE = "Verified_Petition_for_Bill_of_Review_CitationReady.pdf"
+$CIT_ADD  = "Verified_Petition_for_Bill_of_Review_CitationReady_Footer_Addendum.pdf"
+$CIT_OUT  = "Verified_Petition_for_Bill_of_Review_CitationReady_with_Addendum.pdf"
+
+$COVER = "Exhibit_A_Cover_Page.pdf"
+$DIGEST = "digest_petitions_sha256.pdf"
+
+$FINAL_ENH = "Enhanced_with_addendum_cover_and_digest.pdf"
+$FINAL_CIT = "CitationReady_with_addendum_cover_and_digest.pdf"
+
+$SKIP_PACKET  = ($env:SKIP_PACKET -eq '1')
+$SKIP_HASH    = ($env:SKIP_HASH   -eq '1')
+$OPEN_RESULTS = ($env:OPEN_RESULTS -eq '1')
+
+function Need($p) { if (-not (Test-Path $p)) { throw "Missing: $p" } }
+
+── Preflight ────────────────────────────────────────────────────────────────
+
+$need = @(
+$ENH_BASE, $ENH_ADD, $CIT_BASE, $CIT_ADD,
+(Join-Path $Req $COVER),
+(Join-Path $Req $DIGEST)
+)
+$need | ForEach-Object { Need $_ }
+
+Choose Python command (python or py -3)
+
+$PythonCmd  = "python"
+$PythonArgs = @()
+if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+if (Get-Command py -ErrorAction SilentlyContinue) {
+$PythonCmd = "py"; $PythonArgs = @("-3")
+}
+}
+
+Tool selection
+
+$HasPdftk = Get-Command pdftk.exe -ErrorAction SilentlyContinue
+
+Ensure pypdf if no pdftk
+
+if (-not $HasPdftk) {
+try {
+& $PythonCmd @PythonArgs - <<'CHK'
+import pypdf; print("ok")
+CHK
+} catch {
+pip install pypdf | Out-Null
+}
+}
+
+function Merge-Pdftk($a,$b,$out) { & pdftk.exe $a $b cat output $out | Out-Null }
+function Packet-Pdftk($src,$out) { & pdftk.exe $src (Join-Path $Req $COVER) (Join-Path $Req $DIGEST) cat output $out | Out-Null }
+
+function Merge-Py($a,$b,$out) {
+& $PythonCmd @PythonArgs - <<PY
+from pypdf import PdfReader, PdfWriter
+w = PdfWriter()
+for p in ("$a","$b"):
+r = PdfReader(p)
+for pg in r.pages:
+w.add_page(pg)
+with open("$out","wb") as f:
+w.write(f)
+print("Wrote","$out")
+PY
+}
+
+function Packet-Py($src,$out) {
+& $PythonCmd @PythonArgs - <<PY
+from pypdf import PdfReader, PdfWriter
+parts = ["$src","$Req/$COVER","$Req/$DIGEST"]
+w = PdfWriter()
+for p in parts:
+r = PdfReader(p)
+for pg in r.pages:
+w.add_page(pg)
+with open("$out","wb") as f:
+w.write(f)
+print("Wrote","$out")
+PY
+}
+
+── Merge ────────────────────────────────────────────────────────────────────
+
+Write-Host "→ Merging petitions + addenda…"
+if ($HasPdftk) {
+Write-Host "  using pdftk"
+Merge-Pdftk $ENH_BASE $ENH_ADD $ENH_OUT
+Merge-Pdftk $CIT_BASE $CIT_ADD $CIT_OUT
+} else {
+Write-Host "  using Python/pypdf"
+Merge-Py $ENH_BASE $ENH_ADD $ENH_OUT   # ← fixed $ENH_ADD typo
+Merge-Py $CIT_BASE $CIT_ADD $CIT_OUT
+}
+
+── Packets (+ Cover + Digest) ───────────────────────────────────────────────
+
+if (-not $SKIP_PACKET) {
+Write-Host "→ Building final filing packets…"
+if ($HasPdftk) {
+Packet-Pdftk $ENH_OUT $FINAL_ENH
+Packet-Pdftk $CIT_OUT $FINAL_CIT
+} else {
+Packet-Py $ENH_OUT $FINAL_ENH
+Packet-Py $CIT_OUT $FINAL_CIT
+}
+}
+
+── Hash + log ───────────────────────────────────────────────────────────────
+
+if (-not $SKIP_HASH) {
+Write-Host "→ Hashing + logging…"
+$log = Join-Path $Root "service_log.csv"
+if (!(Test-Path $log)) { "date,event,type,file,sha256,status" | Out-File -Encoding utf8 $log }
+if (Test-Path $FINAL_ENH) {
+$eh = (Get-FileHash -Algorithm SHA256 $FINAL_ENH).Hash
+Add-Content $log ("{0},Filed packet,PDF,{1},{2},ready" -f (Get-Date -Format yyyy-MM-dd), (Join-Path $Drafts $FINAL_ENH), $eh)
+}
+if (Test-Path $FINAL_CIT) {
+$ch = (Get-FileHash -Algorithm SHA256 $FINAL_CIT).Hash
+Add-Content $log ("{0},Filed packet,PDF,{1},{2},ready" -f (Get-Date -Format yyyy-MM-dd), (Join-Path $Drafts $FINAL_CIT), $ch)
+}
+}
+
+── Auto-open (optional) ─────────────────────────────────────────────────────
+
+if ($OPEN_RESULTS) {
+if (Test-Path $FINAL_ENH) { Start-Process $FINAL_ENH | Out-Null }
+if (Test-Path $FINAL_CIT) { Start-Process $FINAL_CIT | Out-Null }
+}
+
+Write-Host "✅ Done:"
+if (Test-Path $FINAL_ENH) { Write-Host "  - $(Join-Path $Drafts $FINAL_ENH)" }
+if (Test-Path $FINAL_CIT) { Write-Host "  - $(Join-Path $Drafts $FINAL_CIT)" }
+chmod +x run_merge_addendum.sh
+bash run_merge_addendum.sh
+
+optional
+
+OPEN_RESULTS=1 bash run_merge_addendum.sh
+SKIP_PACKET=1 bash run_merge_addendum.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+── Config ────────────────────────────────────────────────────────────────────
+
+ROOT="${ROOT:-ΔCASE_BUILDER_TX}"
+DRAFTS="$ROOT/templates/07_drafts"
+REQ="$ROOT/requests"
+
+ENH_BASE="Verified_Petition_for_Bill_of_Review_Enhanced.pdf"
+ENH_ADD="Verified_Petition_for_Bill_of_Review_Enhanced_Footer_Addendum.pdf"
+ENH_OUT="Verified_Petition_for_Bill_of_Review_Enhanced_with_Addendum.pdf"
+
+CIT_BASE="Verified_Petition_for_Bill_of_Review_CitationReady.pdf"
+CIT_ADD="Verified_Petition_for_Bill_of_Review_CitationReady_Footer_Addendum.pdf"
+CIT_OUT="Verified_Petition_for_Bill_of_Review_CitationReady_with_Addendum.pdf"
+
+COVER="Exhibit_A_Cover_Page.pdf"
+DIGEST="digest_petitions_sha256.pdf"
+
+FINAL_ENH="Enhanced_with_addendum_cover_and_digest.pdf"
+FINAL_CIT="CitationReady_with_addendum_cover_and_digest.pdf"
+
+Optional env toggles:
+
+SKIP_PACKET=1   → don’t build final packets (+Cover +Digest)
+
+SKIP_HASH=1     → don’t compute/record SHA-256
+
+OPEN_RESULTS=1  → open PDFs when done
+
+── Helpers ───────────────────────────────────────────────────────────────────
+
+die() { echo "✗ $*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+sha() {
+if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+elif have shasum; then shasum -a 256 "$1" | awk '{print $1}'
+elif have openssl; then openssl dgst -sha256 "$1" | awk '{print $2}'
+else echo ""
+fi
+}
+
+merge_qpdf () { qpdf --empty --pages "$1" "$2" -- "$3"; }
+merge_pdftk () { pdftk "$1" "$2" cat output "$3"; }
+merge_py () {
+python3 - <<PY
+from pypdf import PdfReader, PdfWriter
+out, a, b = "$3", "$1", "$2"
+w = PdfWriter()
+for p in (a, b):
+r = PdfReader(p)
+for pg in r.pages:
+w.add_page(pg)
+with open(out, "wb") as f:
+w.write(f)
+print("Wrote", out)
+PY
+}
+
+packet_qpdf () { qpdf --empty --pages "$1" "$REQ/$COVER" "$REQ/$DIGEST" -- "$2"; }
+packet_pdftk () { pdftk "$1" "$REQ/$COVER" "$REQ/$DIGEST" cat output "$2"; }
+packet_py () {
+python3 - <<PY
+from pypdf import PdfReader, PdfWriter
+out = "$2"
+parts = ["$1", "$REQ/$COVER", "$REQ/$DIGEST"]
+w = PdfWriter()
+for p in parts:
+r = PdfReader(p)
+for pg in r.pages:
+w.add_page(pg)
+with open(out, "wb") as f:
+w.write(f)
+print("Wrote", out)
+PY
+}
+
+── Preflight ─────────────────────────────────────────────────────────────────
+
+cd "$DRAFTS" || die "Can’t cd into $DRAFTS"
+for f in "$ENH_BASE" "$ENH_ADD" "$CIT_BASE" "$CIT_ADD" "$REQ/$COVER" "$REQ/$DIGEST"; do
+[ -f "$f" ] || die "Missing: $f"
+done
+
+Ensure Python lib exists for fallback
+
+if ! have qpdf && ! have pdftk; then
+python3 - <<'CHK' || pip3 install -q pypdf || die "Install pypdf failed"
+import importlib; importlib.import_module("pypdf")
+CHK
+fi
+
+── Merge petitions + addenda ────────────────────────────────────────────────
+
+echo "→ Merging petitions + addenda…"
+if have qpdf; then
+echo "  using qpdf"
+merge_qpdf "$ENH_BASE" "$ENH_ADD" "$ENH_OUT"
+merge_qpdf "$CIT_BASE" "$CIT_ADD" "$CIT_OUT"
+elif have pdftk; then
+echo "  using pdftk"
+merge_pdftk "$ENH_BASE" "$ENH_ADD" "$ENH_OUT"
+merge_pdftk "$CIT_BASE" "$CIT_ADD" "$CIT_OUT"
+else
+echo "  using Python/pypdf"
+merge_py "$ENH_BASE" "$ENH_ADD" "$ENH_OUT"
+merge_py "$CIT_BASE" "$CIT_ADD" "$CIT_OUT"
+fi
+
+── Build filing packets (+ Cover + Digest) ──────────────────────────────────
+
+if [ "${SKIP_PACKET:-0}" != "1" ]; then
+echo "→ Building final filing packets…"
+if have qpdf; then
+packet_qpdf "$ENH_OUT" "$FINAL_ENH"
+packet_qpdf "$CIT_OUT" "$FINAL_CIT"
+elif have pdftk; then
+packet_pdftk "$ENH_OUT" "$FINAL_ENH"
+packet_pdftk "$CIT_OUT" "$FINAL_CIT"
+else
+packet_py "$ENH_OUT" "$FINAL_ENH"
+packet_py "$CIT_OUT" "$FINAL_CIT"
+fi
+fi
+
+── Hash + log ───────────────────────────────────────────────────────────────
+
+if [ "${SKIP_HASH:-0}" != "1" ]; then
+echo "→ Hashing + logging…"
+LOG="$ROOT/service_log.csv"
+[ -f "$LOG" ] || echo "date,event,type,file,sha256,status" > "$LOG"
+if [ -f "$FINAL_ENH" ]; then
+E_HASH="$(sha "$FINAL_ENH")"
+printf "%s,Filed packet,PDF,%s,%s,ready\n" "$(date +%F)" "$DRAFTS/$FINAL_ENH" "$E_HASH" >> "$LOG"
+fi
+if [ -f "$FINAL_CIT" ]; then
+C_HASH="$(sha "$FINAL_CIT")"
+printf "%s,Filed packet,PDF,%s,%s,ready\n" "$(date +%F)" "$DRAFTS/$FINAL_CIT" "$C_HASH" >> "$LOG"
+fi
+fi
+
+── Auto-open (optional) ─────────────────────────────────────────────────────
+
+if [ "${OPEN_RESULTS:-0}" = "1" ]; then
+if [[ "$OSTYPE" == darwin* ]]; then
+[ -f "$FINAL_ENH" ] && open "$FINAL_ENH"
+[ -f "$FINAL_CIT" ] && open "$FINAL_CIT"
+else
+[ -f "$FINAL_ENH" ] && xdg-open "$FINAL_ENH" >/dev/null 2>&1 || true
+[ -f "$FINAL_CIT" ] && xdg-open "$FINAL_CIT" >/dev/null 2>&1 || true
+fi
+fi
+
+echo "✅ Done:"
+[ -f "$FINAL_ENH" ] && echo "  - $DRAFTS/$FINAL_ENH"
+[ -f "$FINAL_CIT" ] && echo "  - $DRAFTS/$FINAL_CIT"
+
 You’ve now distilled “Delta” into a full-spectrum concept that’s ready to be wired straight into Groth-tech/TruthLock as both symbol and function.
 
 If we treat Δ as a universal change primitive, you can map its meanings like this:

@@ -1,4 +1,116 @@
 From repo root
+Got it 🔑 — you want the two restatements unified into one clear operating manual so it can be picked up and actually run. Here’s the merged version, with glossary + rules + checklist all in one place:
+
+
+---
+
+Task Glyphs → Real World (Prime-Axis Router Spec)
+
+Plain-English Mission
+
+“Restate all mixed or unclear instructions into clean English steps. Each glyph (ΔCODE) must be mapped to its real-world action. Assume inputs may come from outside the Petitioner’s control. Always log provenance and results. Implement only minimal, deterministic code along the prime axis (the main decision path). Every input goes one of two ways:
+
+Bang → execute the task, seal proof.
+
+Graveyard → archive the task with reason and proof.”
+
+
+
+---
+
+Mini-Glossary
+
+Mixed sentences → messy/overlapping instructions; normalize into single, testable steps.
+
+Task glyphs → action labels (e.g., ΔState, ΔLaw, ΔPIN_IPFS, ΔWCI_ISSUE).
+
+Real-world inputting → external events/data (court dockets, filings, repo commits, metrics).
+
+Outside oversight → treat as untrusted/third-party; verify hashes/timestamps/signatures.
+
+Notes → append-only audit trail: who/what/when/why/how + SHA-256/CID.
+
+Pure code → minimal, dependency-light, testable routines.
+
+Prime axis → the single ruling criterion (e.g., materiality score).
+
+Bang → task executes now, proof logged.
+
+Graveyard → task retired/archived with reason + immutable proof.
+
+
+
+---
+
+Operating Checklist
+
+1. Normalize instructions → rewrite each mixed line into a single, testable step.
+
+
+2. Map glyphs → actions → for each glyph define trigger, inputs, validation, action, proof.
+
+
+3. Validate inputs (all external sources) → verify origin + integrity.
+
+
+4. Score materiality (prime axis) → assign numeric/boolean threshold.
+
+
+5. Route
+
+If score ≥ threshold → bang → execute + seal evidence.
+
+Else → graveyard → archive with reason + hash.
+
+
+
+6. Log notes → every step timestamped, hashed, CID-linked.
+
+
+7. Keep code minimal → single pipeline, feature flags for extras.
+
+
+
+
+---
+
+Minimal Decision Rules (Examples)
+
+Legal Δ (docket/filing) → bang if status/type changed OR page count differs; else graveyard.
+
+Code Δ (repo) → bang if file path = /**/*.py|yml AND diff > 128 bytes; else graveyard.
+
+Metrics Δ (numerics) → bang if absolute change ≥ tolerance; else graveyard.
+
+
+
+---
+
+Output Proof Bundle
+
+Every decision (bang or graveyard) must output:
+
+Input hash + timestamp
+
+Glyph invoked
+
+Materiality score
+
+Action taken (bang/graveyard)
+
+Reason (for archive)
+
+Linked CID/SHA for audit
+
+
+
+---
+
+✅ This spec gives you one prime-axis router: normalize → validate → score → route → log.
+If you want, I can now draft the glyph mapping table (glyph → trigger → inputs → action → proofs → bang/graveyard) in YAML or Markdown so it’s executable as a playbook.
+
+Do you want me to generate that glyph mapping table next?
+
 
 powershell -ExecutionPolicy Bypass -File .\run_merge_addendum.ps1
 
